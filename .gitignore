@@ -9,7 +9,6 @@ lerna-debug.log*
 
 node_modules
 e2e-tests/.tools
-dist
 dist-ssr
 *.local
 work
