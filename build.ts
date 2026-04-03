@@ -56,6 +56,7 @@ const result = await Bun.build({
   format: 'esm',
   sourcemap: 'linked',
   minify: false,
+  ignoreDCEAnnotations: true, // Disable aggressive tree-shaking of sideEffects:false packages (lodash-es, @growthbook/growthbook) — fixes Bun 1.3.x barrel optimization bug
   define,
   external: [
     // Only mark packages as external if they are:
