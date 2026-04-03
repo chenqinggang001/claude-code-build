@@ -119,6 +119,17 @@ const result = await Bun.build({
           '@opentelemetry/exporter-metrics-otlp-grpc', '@opentelemetry/exporter-metrics-otlp-http',
           '@opentelemetry/exporter-metrics-otlp-proto', '@opentelemetry/exporter-prometheus',
           '@opentelemetry/exporter-trace-otlp-grpc', '@opentelemetry/exporter-trace-otlp-proto',
+          // Internal Anthropic packages (not publicly available)
+          '@ant/claude-for-chrome-mcp',
+          '@anthropic-ai/sandbox-runtime',
+          '@anthropic-ai/mcpb',
+          // Cloud provider SDKs (optional, only needed for Bedrock/Vertex/Foundry)
+          '@anthropic-ai/bedrock-sdk',
+          '@anthropic-ai/foundry-sdk',
+          '@anthropic-ai/vertex-sdk',
+          '@aws-sdk/client-sts',
+          '@aws-sdk/client-bedrock',
+          '@aws-sdk/client-bedrock-runtime',
         ];
         build.onResolve({ filter: /.*/ }, (args: any) => {
           if (args.namespace.startsWith('stub-')) return;
@@ -129,17 +140,58 @@ const result = await Bun.build({
           }
         });
         build.onLoad({ filter: /.*/, namespace: 'stub-npm' }, (args: any) => {
-          // Return a Proxy-based stub that handles any named import
+          // Scan source files to find all named imports from this package
+          const importNames: Set<string> = new Set();
+          const srcDir = path.resolve(projectRoot, 'src');
+
+          function scanDir(dir: string) {
+            try {
+              const entries = fs.readdirSync(dir, { withFileTypes: true });
+              for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory() && entry.name !== 'node_modules') {
+                  scanDir(fullPath);
+                } else if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+                  try {
+                    const src = fs.readFileSync(fullPath, 'utf8');
+                    // Match: import { X, Y as Z } from 'package'
+                    const pkgEscaped = args.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const importRegex = new RegExp(
+                      `import\\s*\\{([^}]+)\\}\\s*from\\s*['"]${pkgEscaped}['"]`,
+                      'g'
+                    );
+                    let match;
+                    while ((match = importRegex.exec(src)) !== null) {
+                      const names = match[1].split(',').map((n: string) => {
+                        const parts = n.trim().split(/\s+as\s+/);
+                        return parts[0].trim(); // Use the original export name
+                      });
+                      for (const name of names) {
+                        if (name && name !== 'default' && !name.startsWith('type ')) {
+                          // Strip leading 'type ' for type-only imports
+                          const cleanName = name.replace(/^type\s+/, '');
+                          if (cleanName) importNames.add(cleanName);
+                        }
+                      }
+                    }
+                  } catch {}
+                }
+              }
+            } catch {}
+          }
+          scanDir(srcDir);
+
+          const namedExports = [...importNames]
+            .map(name => `export const ${name} = new Proxy(function(){}, { get: (t, p) => typeof p === 'string' ? (() => {}) : t[p], apply: () => ({}) });`)
+            .join('\n');
+
           return {
             contents: `
               const handler = { get: (t, p) => p === '__esModule' ? true : () => {} };
               const stub = new Proxy({}, handler);
               export default stub;
               export const __stub__ = true;
-              export const confirm = () => {};
-              export const input = () => {};
-              export const select = () => {};
-              export const DestroyerOfModules = class {};
+              ${namedExports}
             `,
             loader: 'js',
           };
@@ -231,7 +283,7 @@ const result = await Bun.build({
           }
 
           const namedExports = [...new Set(exportNames)]
-            .map(name => `export const ${name} = undefined;`)
+            .map(name => `export const ${name} = new Proxy(function(){}, { get: (t, p) => typeof p === 'string' ? (() => {}) : t[p], apply: () => ({}) });`)
             .join('\n');
 
           return {
